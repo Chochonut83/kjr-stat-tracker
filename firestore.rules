@@ -1,0 +1,71 @@
+rules_version = '2';
+// Kitchener Jr Rangers Stat Tracker - database rules.
+// Copy everything in this file into Firebase > Firestore Database > Rules, then Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function teamPath(team) { return /databases/$(database)/documents/teams/$(team); }
+    // You can only see a team if you know its code (the code is part of the path).
+    function isTeam(team) { return signedIn() && exists(/databases/$(database)/documents/teams/$(team)/meta/info); }
+    function isAdmin(team) { return signedIn() && exists(/databases/$(database)/documents/teams/$(team)/admins/$(request.auth.uid)); }
+
+    // Team info. Created once, together with the admin code, when a team is set up.
+    match /teams/{team}/meta/info {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && existsAfter(/databases/$(database)/documents/teams/$(team)/private/admin);
+      allow update, delete: if isAdmin(team);
+    }
+
+    // The roster: team members can see it, only admins can change it.
+    match /teams/{team}/meta/roster {
+      allow read: if isTeam(team);
+      allow write: if isAdmin(team);
+    }
+
+    // The admin code. Nobody can read it, not even admins.
+    match /teams/{team}/private/admin {
+      allow read: if false;
+      allow create: if signedIn()
+        && !exists(/databases/$(database)/documents/teams/$(team)/meta/info)
+        && existsAfter(/databases/$(database)/documents/teams/$(team)/meta/info);
+      allow update, delete: if isAdmin(team);
+    }
+
+    // Admins: you become one by entering the right admin code.
+    match /teams/{team}/admins/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.code == getAfter(/databases/$(database)/documents/teams/$(team)/private/admin).data.code;
+      allow delete: if signedIn() && (request.auth.uid == uid || isAdmin(team));
+    }
+
+    // The game being tracked right now. Only the current tracker can write,
+    // unless the game is over or someone deliberately takes over.
+    match /teams/{team}/live/{docId} {
+      allow read: if isTeam(team);
+      allow create: if isTeam(team) && request.resource.data.trackerUid == request.auth.uid;
+      allow update: if isTeam(team) && request.resource.data.trackerUid == request.auth.uid
+        && (resource.data.trackerUid == request.auth.uid
+            || resource.data.phase != 'game'
+            || request.resource.data.takeover == true);
+      allow delete: if isTeam(team) && (resource.data.trackerUid == request.auth.uid || isAdmin(team));
+    }
+
+    // Saved games. The person who tracked a game saves it; admins can change or delete any game.
+    match /teams/{team}/games/{gameId} {
+      allow read: if isTeam(team);
+      allow create: if isTeam(team) && (isAdmin(team) || request.resource.data.trackerUid == request.auth.uid);
+      allow update: if isTeam(team) && (isAdmin(team)
+        || (resource.data.trackerUid == request.auth.uid && request.resource.data.trackerUid == request.auth.uid));
+      allow delete: if isAdmin(team);
+    }
+
+    // Photos attached to games added from photos. Admins only.
+    match /teams/{team}/photos/{photoId} {
+      allow read: if isTeam(team);
+      allow create, update, delete: if isAdmin(team);
+    }
+  }
+}
