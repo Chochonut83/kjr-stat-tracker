@@ -1024,10 +1024,10 @@ function createTeam(code,admin,name){
   ]);
 }
 async function afterJoin(){
-  stopLiveWatch();stopRoster();if(hUnsub){hUnsub();hUnsub=null}HLIST=null;
+  stopLiveWatch();stopRoster();stopOpps();applyOpps([]);if(hUnsub){hUnsub();hUnsub=null}HLIST=null;
   try{const a=await TDB.get(tpath("admins",ME));setTeam({...TEAM,admin:!!a})}catch(e){}
   try{const r=await TDB.get(tpath("meta","roster"));setRoster(r&&Array.isArray(r.players)?r.players:[])}catch(e){setRoster([])}
-  startLiveWatch();watchRoster();S=fresh();VIEW=null;render();scrollTo(0,0);
+  startLiveWatch();watchRoster();watchOpps();S=fresh();VIEW=null;render();scrollTo(0,0);
 }
 
 /* ---------- settings ---------- */
@@ -1036,6 +1036,7 @@ function settingsSheet(){
     body:`<div class="field"><label for="sName">Your name</label><div class="row"><input id="sName" value="${esc(TEAM.name)}" style="flex:1;min-width:0;border:2px solid var(--line);border-radius:10px;padding:11px 12px;font-size:16px"><button class="btn btn-ghost" id="sNameGo">Save</button></div></div>
       <div class="lbl">Team code</div><p class="hint"><b style="font-size:18px;color:var(--ink)">${esc(TEAM.code)}</b><br>Share this with players' families and anyone who tracks stats.</p>
       ${isAdmin()?`<div class="lbl">Admin</div><p class="hint">You're an admin on this phone. You can add games from photos, fix or delete any saved game, and change the team code.</p>
+        <button class="btn btn-ghost" id="sOpps">Saved opponent teams (${CUSTOM_OPPS.length})</button>
         <button class="btn btn-ghost" id="sRoster">Team roster (${teamRoster().length} players)</button>
         <button class="btn btn-ghost" id="sImport" hidden>Import games from the original app</button>
         <button class="btn btn-ghost" id="sMove">Change team code</button>`
@@ -1049,9 +1050,10 @@ function settingsSheet(){
         try{await TDB.set(tpath("admins",ME),{code:c,name:TEAM.name,at:Date.now()});setTeam({...TEAM,admin:true});toast("Admin unlocked");close();render()}
         catch(e){err(e.code==="permission_denied"?"That admin code isn't right.":"Couldn't check the code. Are you online?")}};
       const mv=r.querySelector("#sMove");if(mv)mv.onclick=()=>{close();moveTeamSheet()};
+      const op=r.querySelector("#sOpps");if(op)op.onclick=()=>{close();oppsSheet()};
       const ro=r.querySelector("#sRoster");if(ro)ro.onclick=()=>{close();rosterSheet()};
       const im=r.querySelector("#sImport");if(im)fetch("import-games.json",{cache:"no-store"}).then(x=>x.ok?x.json():null).then(j=>{if(j&&j.games&&j.games.length){im.hidden=false;im.textContent=`Import ${j.games.length} games from the original app`;im.onclick=()=>{close();importGames(j)}}}).catch(()=>{});
-      r.querySelector("#sLeave").onclick=()=>{close();confirmSheet("Leave this team?","This phone stops showing the team's games. Nothing is deleted. You can join again with the team code.","Leave team",()=>{stopLiveWatch();stopRoster();setRoster(null);if(hUnsub){hUnsub();hUnsub=null}HLIST=null;setTeam(null);S=fresh();VIEW=null;render()})};
+      r.querySelector("#sLeave").onclick=()=>{close();confirmSheet("Leave this team?","This phone stops showing the team's games. Nothing is deleted. You can join again with the team code.","Leave team",()=>{stopLiveWatch();stopRoster();setRoster(null);stopOpps();applyOpps([]);if(hUnsub){hUnsub();hUnsub=null}HLIST=null;setTeam(null);S=fresh();VIEW=null;render()})};
     },onOk:()=>{}});
 }
 function moveTeamSheet(){
@@ -1074,9 +1076,10 @@ function moveTeamSheet(){
           await createTeam(code,admin,TEAM.name);
           const old=TEAM.code,games=await TDB.getColl(tpath("games")),photos=await TDB.getColl(tpath("photos"));
           const ros=await TDB.get(tpath("meta","roster"));if(ros)await TDB.set(`teams/${code}/meta/roster`,ros);
+          const opps=await TDB.getColl(tpath("opponents"));for(const o of opps)await TDB.set(`teams/${code}/opponents/${o.id}`,o.data);
           for(let i=0;i<games.length;i+=200)await TDB.batch(games.slice(i,i+200).map(g=>({op:"set",path:`teams/${code}/games/${g.id}`,data:g.data})));
           for(const p of photos)await TDB.set(`teams/${code}/photos/${p.id}`,p.data);
-          const dels=[...games.map(g=>`teams/${old}/games/${g.id}`),...photos.map(p=>`teams/${old}/photos/${p.id}`),`teams/${old}/live/current`];
+          const dels=[...opps.map(o=>`teams/${old}/opponents/${o.id}`),...games.map(g=>`teams/${old}/games/${g.id}`),...photos.map(p=>`teams/${old}/photos/${p.id}`),`teams/${old}/live/current`];
           for(let i=0;i<dels.length;i+=200)await TDB.batch(dels.slice(i,i+200).map(path=>({op:"del",path})));
           await TDB.batch([{op:"del",path:`teams/${old}/meta/roster`},{op:"del",path:`teams/${old}/meta/info`},{op:"del",path:`teams/${old}/private/admin`}]);
           await TDB.del(`teams/${old}/admins/${ME}`).catch(()=>{});
@@ -1155,6 +1158,87 @@ function rosterSheet(){
     },onOk:()=>{}});
 }
 
+/* ---------- opponent teams added by the team (name + logo, saved for next time) ---------- */
+const BUILTIN_LOGOS={...LOGOS};
+const OPPKEY="kjr-stat-tracker-v1-opps";
+let CUSTOM_OPPS=(()=>{try{return JSON.parse(localStorage.getItem(OPPKEY))||[]}catch(e){return[]}})(),oppUnsub=null,pendingLogo=null;
+function applyOpps(list){
+  for(const k of Object.keys(LOGOS))if(!(k in BUILTIN_LOGOS))delete LOGOS[k];
+  Object.assign(LOGOS,BUILTIN_LOGOS);
+  for(const o of list)if(o&&o.name)LOGOS[o.name]=o.logo||BUILTIN_LOGOS[o.name]||"";
+  CUSTOM_OPPS=list;try{localStorage.setItem(OPPKEY,JSON.stringify(list))}catch(e){}
+}
+applyOpps(CUSTOM_OPPS);
+const oppId=name=>name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,60)||"team";
+function watchOpps(){
+  if(oppUnsub||!TEAM||!TDB||TDB.noConfig)return;
+  oppUnsub=TDB.watchColl(tpath("opponents"),"name","asc",docs=>{applyOpps(docs);if(!VIEW&&S.phase==="opp"&&!document.querySelector(".scrim")&&!(document.activeElement&&document.activeElement.id==="otherTeam"))render()},()=>{});
+}
+function stopOpps(){if(oppUnsub){oppUnsub();oppUnsub=null}}
+// shrink a picked logo: trim blank margins, fit in 240px, keep transparency
+async function makeLogo(file){
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await loadImg(url);if(!img)throw new Error("That file isn't a picture this phone can open.");
+    const c=document.createElement("canvas");c.width=img.width;c.height=img.height;const x=c.getContext("2d");x.drawImage(img,0,0);
+    let d;try{d=x.getImageData(0,0,c.width,c.height).data}catch(e){d=null}
+    let L=0,T=0,R=c.width-1,B=c.height-1;
+    if(d){const blank=i=>d[i+3]<20||(d[i]>242&&d[i+1]>242&&d[i+2]>242);L=c.width;T=c.height;R=-1;B=-1;
+      for(let y=0;y<c.height;y+=2)for(let xx=0;xx<c.width;xx+=2){if(!blank((y*c.width+xx)*4)){if(xx<L)L=xx;if(xx>R)R=xx;if(y<T)T=y;if(y>B)B=y}}
+      if(R<0){L=0;T=0;R=c.width-1;B=c.height-1}}
+    const w=R-L+1,h=B-T+1,sc=Math.min(1,240/Math.max(w,h)),o=document.createElement("canvas");
+    o.width=Math.max(1,Math.round(w*sc));o.height=Math.max(1,Math.round(h*sc));o.getContext("2d").drawImage(c,L,T,w,h,0,0,o.width,o.height);
+    let out=o.toDataURL("image/png");if(out.length>200000)out=o.toDataURL("image/webp",.9);if(out.length>200000||!out.startsWith("data:image/webp")&&out.length>200000)out=o.toDataURL("image/jpeg",.85);
+    return out;
+  }finally{URL.revokeObjectURL(url)}
+}
+function addTeamHTML(){
+  return`<div class="lbl" style="margin-top:4px">Not listed? Add a team</div>
+    <div class="field"><label for="otherTeam">Team name</label><input id="otherTeam" placeholder="e.g. Brampton Bombers" autocomplete="off" value="${S.opp&&!(S.opp in LOGOS)?esc(S.opp):""}"></div>
+    <label class="pick" for="otherLogo"><span class="pk-prev" id="olPrev">${pendingLogo?`<img src="${pendingLogo}" alt="" style="object-fit:contain">`:"＋"}</span><span><b>Logo (optional)</b><small id="olName">${pendingLogo?"Logo added":"Tap to choose a picture"}</small></span><input type="file" id="otherLogo" accept="image/*" hidden></label>
+    <label class="row" style="gap:8px;font-weight:600"><input type="checkbox" id="otherSave" checked style="width:20px;height:20px"> Save this team for future games</label>
+    <p class="err-msg" id="otherErr"></p>
+    <button class="btn btn-navy" id="useOther">Use this team</button>`;
+}
+function wireAddTeam(){
+  const f=$("#otherLogo");if(!f)return;
+  f.onchange=async()=>{const file=f.files[0];if(!file)return;$("#olName").textContent="Preparing…";
+    try{pendingLogo=await makeLogo(file);$("#olPrev").innerHTML=`<img src="${pendingLogo}" alt="" style="object-fit:contain">`;$("#olName").textContent="Logo added";$("#otherErr").textContent=""}
+    catch(e){pendingLogo=null;$("#olName").textContent="Tap to choose a picture";$("#otherErr").textContent=e.message||"Couldn't use that picture."}};
+  $("#useOther").onclick=useOtherTeam;
+}
+async function useOtherTeam(){
+  const name=$("#otherTeam").value.trim().replace(/\s+/g," "),save=$("#otherSave").checked,err=t=>{$("#otherErr").textContent=t};
+  if(!name){$("#otherTeam").classList.add("err");return err("Enter the team's name.")}
+  if(name===HOME)return err("That's us! Enter the other team's name.");
+  const existing=CUSTOM_OPPS.find(o=>o.name.toLowerCase()===name.toLowerCase())||(Object.keys(BUILTIN_LOGOS).find(k=>k.toLowerCase()===name.toLowerCase())&&{name:Object.keys(BUILTIN_LOGOS).find(k=>k.toLowerCase()===name.toLowerCase())});
+  const finalName=existing?existing.name:name;
+  if(pendingLogo)LOGOS[finalName]=pendingLogo;else if(!(finalName in LOGOS))LOGOS[finalName]="";
+  if(save&&TDB&&!TDB.noConfig&&(pendingLogo||!existing)){
+    const rec={name:finalName,logo:pendingLogo||(existing&&existing.logo)||null,addedBy:TEAM.name,at:Date.now()};
+    const b=$("#useOther");b.disabled=true;b.textContent="Saving…";
+    try{await Promise.race([TDB.set(tpath("opponents",oppId(finalName)),rec),new Promise(r=>setTimeout(r,4000))]);toast(`${finalName} saved for future games`)}
+    catch(e){if(e.code==="permission_denied")applyOpps(CUSTOM_OPPS);toast(e.code==="permission_denied"?`${finalName} is already saved. Only admins can change its logo.`:"Couldn't save the team right now, but you can still use it for this game.")}
+  }
+  pendingLogo=null;S.opp=finalName;S.phase="goalie";render();scrollTo(0,0);
+}
+function oppsSheet(){
+  sheet({title:"Saved opponent teams",stripe:"var(--navy)",okLabel:"Done",single:true,
+    body:`<p class="hint">Teams added by the team, with their logos. Anyone can add a team when starting a game; admins can change logos or remove teams here.</p><div id="opList"></div><p class="err-msg" id="opErr"></p>`,
+    mount:r=>{
+      const err=t=>{r.querySelector("#opErr").textContent=t};
+      const paint=()=>{const list=CUSTOM_OPPS.slice().sort((a,b)=>a.name.localeCompare(b.name));
+        r.querySelector("#opList").innerHTML=list.length?`<div class="roster">${list.map((o,i)=>`<div class="rrow" style="grid-template-columns:48px 1fr auto auto">${logoHTML(o.name,"hlogo")}<span class="nm">${esc(o.name)}</span><label class="minibtn" style="cursor:pointer">Logo<input type="file" accept="image/*" hidden data-lg="${i}"></label><button class="xbtn" data-rm="${i}" aria-label="Remove ${esc(o.name)}">×</button></div>`).join("")}</div>`:`<p class="empty">No teams added yet. Add one from the opponent step when you start a game.</p>`;
+        r.querySelectorAll("[data-lg]").forEach(inp=>inp.onchange=async()=>{const o=list[+inp.dataset.lg],file=inp.files[0];if(!file)return;
+          try{const logo=await makeLogo(file);await TDB.set(tpath("opponents",oppId(o.name)),{...o,logo,at:Date.now()});o.logo=logo;LOGOS[o.name]=logo;paint();toast(`Logo updated for ${o.name}`)}
+          catch(e){err(e.code==="permission_denied"?"Only admins can change logos.":(e.message||"Couldn't update the logo."))}});
+        r.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{const o=list[+b.dataset.rm];
+          try{await TDB.del(tpath("opponents",oppId(o.name)));applyOpps(CUSTOM_OPPS.filter(x=>x.name!==o.name));paint();toast(`Removed ${o.name}`)}
+          catch(e){err(e.code==="permission_denied"?"Only admins can remove teams.":"Couldn't remove it. Are you online?")}});
+      };paint();
+    },onOk:()=>{render()}});
+}
+
 /* ---------- screens ---------- */
 function render(){
   if(!TEAM)return viewJoin();
@@ -1182,12 +1266,12 @@ function viewOpp(){
     <div class="card">
       <h2>Who are we playing?</h2>
       <div class="teams">${teams.map(n=>`<button class="tbtn ${S.opp===n?"sel":""}" data-t="${esc(n)}">${logoHTML(n,"")}<span>${esc(n)}</span></button>`).join("")}</div>
-      <div class="row"><div class="field"><label for="otherTeam">Other team</label><input id="otherTeam" placeholder="Type a team name" autocomplete="off" value="${S.opp&&!LOGOS[S.opp]?esc(S.opp):""}"></div><button class="btn btn-ghost" id="useOther" style="align-self:flex-end">Use</button></div>
+      ${addTeamHTML()}
     </div>
   </div></section>`;
   $("#hist").onclick=openHistory;
   document.querySelectorAll(".tbtn").forEach(b=>b.onclick=()=>{S.opp=b.dataset.t;S.phase="goalie";render();scrollTo(0,0)});
-  $("#useOther").onclick=()=>{const v=$("#otherTeam").value.trim();if(!v){$("#otherTeam").classList.add("err");return}S.opp=v;S.phase="goalie";render();scrollTo(0,0)};
+  wireAddTeam();
   if(res)$("#resume").onclick=()=>{if(LIVEDOC&&LIVEDOC.trackerUid!==ME&&(LIVEDOC.gameId===res.gameId||LIVEDOC.phase==="game")){pending=null;watchLive();return}S=res;pending=null;render()};
   wireStartExtras();
 }
@@ -1920,7 +2004,7 @@ window.TEAMDB_P=window.TEAMDB_P||new Promise(r=>window.__teamDB=r);
       if(!info&&navigator.onLine){const old=TEAM.code;setTeam(null);setRoster(null);S=fresh();viewJoin(`The team code "${old}" doesn't work anymore. Ask your coach for the new one.`);return}
       const a=await TDB.get(tpath("admins",ME)).catch(()=>undefined);if(a!==undefined)setTeam({...TEAM,admin:!!a});
     }catch(e){}
-    startLiveWatch();watchRoster();
+    startLiveWatch();watchRoster();watchOpps();
   }
   if(saved&&(saved.phase==="game"||saved.phase==="final")){S=fresh();render()}
   else if(saved){S=saved;render()}

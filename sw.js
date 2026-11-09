@@ -1,7 +1,7 @@
 // Lets the app open with no signal at the rink. When you upload a new version,
 // change the number below so phones pick it up.
 const VERSION = "kjr-team-1";
-const CORE = ["./", "./index.html", "./config.js", "./firebase-glue.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
+const CORE = ["./", "./index.html", "./config.js", "./firebase-glue.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-maskable-192.png", "./icon-maskable-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => Promise.all(CORE.map(u => c.add(u).catch(() => {})))).then(() => self.skipWaiting()));

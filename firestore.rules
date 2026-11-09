@@ -62,6 +62,14 @@ service cloud.firestore {
       allow delete: if isAdmin(team);
     }
 
+    // Opponent teams added by the team, with their logos. Anyone on the team can add one;
+    // only admins can change or remove one.
+    match /teams/{team}/opponents/{oppId} {
+      allow read: if isTeam(team);
+      allow create: if isTeam(team);
+      allow update, delete: if isAdmin(team);
+    }
+
     // Photos attached to games added from photos. Admins only.
     match /teams/{team}/photos/{photoId} {
       allow read: if isTeam(team);
