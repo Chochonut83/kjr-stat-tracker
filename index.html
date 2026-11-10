@@ -140,6 +140,17 @@ h2{font-family:var(--f-display);font-weight:700;font-size:24px;text-transform:up
 .watchbar.stale .dot{background:var(--amber);animation:none}
 @keyframes pulse{50%{opacity:.35}}
 .gfoot.one{grid-template-columns:1fr}
+#game.watching{height:auto;min-height:100%;padding-bottom:24px}
+#game.watching .halves{flex:none}
+.livedet{display:flex;flex-direction:column;gap:10px}
+.livedet .card{padding:12px 14px;gap:6px}
+.livedet .lbl em{font-style:normal;color:var(--ink-2);background:var(--muted);border-radius:6px;padding:1px 7px}
+.lpcard{border:2px solid var(--navy)}
+.lpcard.new{animation:lpflash 1.4s ease-out}
+@keyframes lpflash{0%{background:#fde9b8}100%{background:rgba(255,255,255,.92)}}
+.lptxt{font-family:var(--f-display);font-weight:700;font-size:21px;line-height:1.15;color:var(--ink)}
+.lpwhen{font-size:13px;font-weight:600;color:var(--ink-2)}
+@media (prefers-reduced-motion:reduce){.lpcard.new,.watchbar .dot{animation:none}}
 .seg{display:flex;background:var(--muted);border-radius:10px;padding:4px;gap:4px}
 .seg button{flex:1;padding:10px 6px;border-radius:8px;font-weight:700;font-size:14px;color:var(--ink-2)}
 .seg button.on{background:var(--navy);color:#fff}
@@ -892,7 +903,7 @@ function busySheet(cur){
     mount:(r,close)=>{r.querySelector("#bsTake").onclick=()=>{close();takeOver()}},
     onOk:()=>{watchLive()}});
 }
-function watchLive(){if(!LIVEDOC||!LIVEDOC.state){VIEW=null;render();return}if(!VIEW)LIVE=null;VIEW="watch";S=clone(LIVEDOC.state);if(!S.lens)migrate(S);render();scrollTo(0,0)}
+function watchLive(){LASTPLAYSEEN=null;if(!LIVEDOC||!LIVEDOC.state){VIEW=null;render();return}if(!VIEW)LIVE=null;VIEW="watch";S=clone(LIVEDOC.state);if(!S.lens)migrate(S);render();scrollTo(0,0)}
 function takeOver(){
   const d=LIVEDOC;if(!d||!d.state){toast("There's no live game to take over.");return}
   confirmSheet("Take over tracking?",`${d.trackerName||"The current tracker"} is tracking now. You'll be able to enter stats and their phone will switch to view-only. The game will show it was tracked by both of you.`,"Take over",async()=>{
@@ -914,7 +925,8 @@ function decorateWatchGame(){
   document.querySelectorAll(".acts,.gfoot,#goalsbtn,#newg,.lastact").forEach(e=>e.remove());
   const gp=$("#gpill");if(gp){gp.disabled=true;gp.querySelector(".gl2")?.remove()}
   const gb=document.querySelector(".gbar");if(gb)gb.insertAdjacentHTML("afterbegin",`<button class="minibtn" id="wHome" style="justify-self:start">← Home</button>`);
-  $("#game").insertAdjacentHTML("beforeend",`${watchBarHTML()}<div class="gfoot one"><button class="btn btn-ghost" id="wTake">Take over tracking</button></div>`);
+  $("#game").classList.add("watching");
+  $("#game").insertAdjacentHTML("beforeend",`${watchBarHTML()}${liveDetailHTML()}<div class="gfoot one"><button class="btn btn-ghost" id="wTake">Take over tracking</button></div>`);
   $("#wHome").onclick=leaveWatch;$("#wTake").onclick=takeOver;
 }
 function decorateWatchFinal(){
@@ -1237,6 +1249,40 @@ function oppsSheet(){
           catch(e){err(e.code==="permission_denied"?"Only admins can remove teams.":"Couldn't remove it. Are you online?")}});
       };paint();
     },onOk:()=>{render()}});
+}
+
+/* ---------- live watch detail: last play, goals, penalties ---------- */
+const fullP=p=>p?`#${p.n} ${p.name}`:"";
+const whenTxt=e=>e&&e.t!=null?`${PER(e.p)} · ${fmtT(e.t)}`:e&&e.p?PER(e.p)+(e.p<=3?" period":""):"";
+function lastPlayText(e){
+  const opp=S.opp||"Opponent";
+  if(!e)return"Waiting for the first play";
+  if(e.k==="shot")return`Shot on net · ${e.s==="K"?"Rangers":opp}`;
+  if(e.k==="fo"){
+    if(e.s==="K")return e.pl?`Faceoff win by ${fullP(e.pl)}`:"Faceoff win · Rangers";
+    return e.pl?`Faceoff win · ${opp} (lost by ${fullP(e.pl)})`:`Faceoff win · ${opp}`;
+  }
+  if(e.k==="goal"){
+    const tg=e.type==="PP"?" (power play)":e.type==="SH"?" (shorthanded)":"";
+    if(e.s!=="K")return`Goal · ${opp}${tg}`;
+    const as=[e.a1,e.a2].filter(Boolean).map(fullP);
+    return`GOAL · ${fullP(e.sc)}${tg} · ${as.length?"Assists: "+as.join(", "):"Unassisted"}`;
+  }
+  if(e.k==="pen")return`Penalty · ${e.s==="K"?fullP(e.pl)||"Rangers":opp} · ${e.label}${e.inf?" "+e.inf:""}`;
+  if(e.k==="gch")return`Goalie change · ${fullP(e.g)} in net`;
+  if(e.k==="end")return e.final?"End of game":`End of the ${PER(e.p)} period`;
+  return"";
+}
+let LASTPLAYSEEN=null;
+function liveDetailHTML(){
+  const ev=S.events||[],last=ev[ev.length-1],goals=ev.filter(e=>e.k==="goal"),pens=ev.filter(e=>e.k==="pen");
+  const key=ev.length+":"+(last?JSON.stringify(last):"");const fresh=LASTPLAYSEEN!==null&&key!==LASTPLAYSEEN;LASTPLAYSEEN=key;
+  const tag=t=>t==="PP"?`<span class="pp">PP</span>`:t==="SH"?`<span class="pp sh">SH</span>`:"";
+  return`<div class="livedet">
+    <div class="card lpcard ${fresh?"new":""}"><div class="lbl">Last play</div><div class="lptxt">${esc(lastPlayText(last))}</div>${last&&whenTxt(last)?`<small class="lpwhen">${esc(whenTxt(last))}</small>`:""}</div>
+    <div class="card"><div class="lbl">Goals <em>${goals.length}</em></div>${goals.length?`<div class="glist">${goals.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who">${e.s==="K"?`<b>${esc(fullP(e.sc))}</b>${tag(e.type)}<div>${e.a1?"Assists: "+[e.a1,e.a2].filter(Boolean).map(a=>esc(fullP(a))).join(", "):"Unassisted"}</div>`:`<b>${esc(S.opp)}</b>${tag(e.type)}`}</div></div>`).join("")}</div>`:`<p class="empty">No goals yet.</p>`}</div>
+    <div class="card"><div class="lbl">Penalties <em>${pens.length}</em></div>${pens.length?`<div class="glist">${pens.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who"><b>${e.s==="K"?esc(fullP(e.pl)||"Rangers"):esc(S.opp)}</b><div>${esc(e.label)}${e.inf?" · "+esc(e.inf):""}</div></div></div>`).join("")}</div>`:`<p class="empty">No penalties yet.</p>`}</div>
+  </div>`;
 }
 
 /* ---------- screens ---------- */
