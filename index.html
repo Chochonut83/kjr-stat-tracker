@@ -212,6 +212,7 @@ h2{font-family:var(--f-display);font-weight:700;font-size:24px;text-transform:up
 .chip.on b,.chip.on span{color:#fff}
 .chip i{position:absolute;top:-7px;right:-5px;font-style:normal;font-size:10px;font-weight:800;background:var(--red);color:#fff;border-radius:6px;padding:2px 4px}
 .chip.wide{grid-column:span 2;flex-direction:row;justify-content:center;gap:6px;font-weight:700}
+.coinh{margin-top:6px;color:var(--ink);font-size:13px}
 .chip.lock{background:var(--navy-deep);border-color:var(--navy-deep)}
 .chip.wide.on{background:var(--ink);border-color:var(--ink);color:#fff}
 .chip:disabled{opacity:.3}
@@ -1268,7 +1269,7 @@ function lastPlayText(e){
     const as=[e.a1,e.a2].filter(Boolean).map(fullP);
     return`GOAL · ${fullP(e.sc)}${tg} · ${as.length?"Assists: "+as.join(", "):"Unassisted"}`;
   }
-  if(e.k==="pen")return`Penalty · ${e.s==="K"?fullP(e.pl)||"Rangers":opp} · ${e.label}${e.inf?" "+e.inf:""}`;
+  if(e.k==="pen")return`${e.coin?"Coincidental penalty":"Penalty"} · ${penWho(e)} · ${e.label}${e.inf?" "+e.inf:""}`;
   if(e.k==="gch")return`Goalie change · ${fullP(e.g)} in net`;
   if(e.k==="end")return e.final?"End of game":`End of the ${PER(e.p)} period`;
   return"";
@@ -1281,14 +1282,101 @@ function liveDetailHTML(){
   return`<div class="livedet">
     <div class="card lpcard ${fresh?"new":""}"><div class="lbl">Last play</div><div class="lptxt">${esc(lastPlayText(last))}</div>${last&&whenTxt(last)?`<small class="lpwhen">${esc(whenTxt(last))}</small>`:""}</div>
     <div class="card"><div class="lbl">Goals <em>${goals.length}</em></div>${goals.length?`<div class="glist">${goals.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who">${e.s==="K"?`<b>${esc(fullP(e.sc))}</b>${tag(e.type)}<div>${e.a1?"Assists: "+[e.a1,e.a2].filter(Boolean).map(a=>esc(fullP(a))).join(", "):"Unassisted"}</div>`:`<b>${esc(S.opp)}</b>${tag(e.type)}`}</div></div>`).join("")}</div>`:`<p class="empty">No goals yet.</p>`}</div>
-    <div class="card"><div class="lbl">Penalties <em>${pens.length}</em></div>${pens.length?`<div class="glist">${pens.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who"><b>${e.s==="K"?esc(fullP(e.pl)||"Rangers"):esc(S.opp)}</b><div>${esc(e.label)}${e.inf?" · "+esc(e.inf):""}</div></div></div>`).join("")}</div>`:`<p class="empty">No penalties yet.</p>`}</div>
+    <div class="card"><div class="lbl">Penalties <em>${pens.length}</em></div>${pens.length?`<div class="glist">${pens.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who"><b>${esc(penWho(e))}</b><div>${esc(penText(e))}</div></div></div>`).join("")}</div>`:`<p class="empty">No penalties yet.</p>`}</div>
   </div>`;
+}
+
+/* ---------- admins: edit a finished, saved game ---------- */
+let GEDIT=null;
+function startGameEdit(){
+  if(!isAdmin()){toast("Only admins can edit saved games.");return}
+  const g=allGames().find(x=>x.id===S.gameId);if(!g||!g.state){toast("Couldn't find this game. Go back to Saved games and try again.");return}
+  S=clone(g.state);if(!S.lens)migrate(S);GEDIT={rec:g,dirty:false};VIEW="gedit";render();scrollTo(0,0);
+}
+function playedPeriods(){const n=S.events.filter(e=>e.k==="end").length;return Array.from({length:Math.max(1,n)},(_,i)=>i+1)}
+function cntBy(k,s,p){return S.events.filter(e=>(e.k===k||(k==="shot"&&e.k==="goal"))&&e.s===s&&e.p===p).length}
+function stepRowHTML(kind,label){
+  return playedPeriods().map(p=>{const o=cntBy(kind,"O",p),k=cntBy(kind,"K",p);
+    const st=(s,v)=>`<span class="stp"><button class="step" data-k="${kind}" data-s="${s}" data-p="${p}" data-d="-1" aria-label="One less ${label} for ${s==="K"?"Rangers":esc(S.opp)} in the ${PER(p)}">−</button><b>${v}</b><button class="step" data-k="${kind}" data-s="${s}" data-p="${p}" data-d="1" aria-label="One more ${label} for ${s==="K"?"Rangers":esc(S.opp)} in the ${PER(p)}">+</button></span>`;
+    return`<tr><td class="l" style="text-align:left">${PER(p)}</td><td>${st("O",o)}</td><td>${st("K",k)}</td></tr>`}).join("");
+}
+function adjustCount(kind,s,p,d){
+  if(d>0){insertAtPeriod([{k:kind,s,p}],p)}
+  else{let i=-1;for(let j=S.events.length-1;j>=0;j--){const e=S.events[j];if(e.k===kind&&e.s===s&&e.p===p){i=j;break}}
+    if(i<0){toast(kind==="shot"?"The rest of those shots are goals. Edit or delete the goal instead.":"No faceoffs left to remove in that period.");return}
+    S.events.splice(i,1)}
+  GEDIT.dirty=true;const y=scrollY;viewGameEdit();scrollTo(0,y);
+}
+function viewGameEdit(){
+  const teams=Object.keys(LOGOS).filter(n=>n!==HOME).sort(),d=new Date(S.start||Date.now()),{c}=calc();
+  const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`,ts=`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+  const goals=S.events.filter(e=>e.k==="goal"),pens=S.events.filter(e=>e.k==="pen");
+  const tag=t=>t==="PP"?`<span class="pp">PP</span>`:t==="SH"?`<span class="pp sh">SH</span>`:"";
+  $("#app").innerHTML=`<section class="screen"><div class="wrap">
+    ${brand()}
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h2>Edit game</h2><span class="tag">Admin</span></div>
+      <p class="hint">Rangers ${c.K.g}, ${esc(S.opp)} ${c.O.g}. Changes are saved for the whole team when you tap <b>Save changes</b>.</p>
+      <div class="field"><label for="geOpp">Opponent</label><input id="geOpp" list="geTeams" value="${esc(S.opp)}" autocomplete="off"><datalist id="geTeams">${teams.map(x=>`<option value="${esc(x)}">`).join("")}</datalist></div>
+      <div class="row"><div class="field"><label for="geDate">Date</label><input id="geDate" type="date" value="${ds}"></div><div class="field"><label for="geTime">Start time</label><input id="geTime" type="time" value="${ts}"></div></div>
+      <p class="err-msg" id="geErr"></p>
+    </div>
+    <div class="card"><div class="row" style="justify-content:space-between"><h2>Goals</h2><button class="minibtn" id="geAddG">+ Add goal</button></div>
+      ${goals.length?`<div class="hlist">${goals.map((e,i)=>`<button class="hrow gerow" data-g="${i}" style="grid-template-columns:56px 1fr auto"><span class="when" style="font-family:var(--f-display);font-weight:700;line-height:1.1"><b style="display:block;font-size:18px">${PER(e.p)}</b>${fmtT(e.t)}</span><span class="hmid"><b>${e.s==="K"?esc(`#${e.sc.n} ${e.sc.name}`):esc(S.opp)} ${tag(e.type)}</b><small>${e.s==="K"?(e.a1?"Assists: "+[e.a1,e.a2].filter(Boolean).map(a=>"#"+a.n).join(", "):"Unassisted"):"Opponent goal"}</small></span><span class="tag">Edit</span></button>`).join("")}</div>`:`<p class="empty">No goals.</p>`}
+    </div>
+    <div class="card"><div class="row" style="justify-content:space-between"><h2>Penalties</h2><button class="minibtn" id="geAddP">+ Add penalty</button></div>
+      ${pens.length?`<div class="hlist">${pens.map((e,i)=>`<button class="hrow gerow" data-p="${i}" style="grid-template-columns:56px 1fr auto"><span class="when" style="font-family:var(--f-display);font-weight:700;line-height:1.1"><b style="display:block;font-size:18px">${PER(e.p)}</b>${fmtT(e.t)}</span><span class="hmid"><b>${esc(penWho(e))}</b><small>${esc(penText(e))}</small></span><span class="tag">Edit</span></button>`).join("")}</div>`:`<p class="empty">No penalties.</p>`}
+    </div>
+    <div class="card"><h2>Shots on net</h2><p class="hint" style="font-size:13px">Shots include goals.</p>
+      <table class="stbl"><thead><tr><th style="text-align:left">Period</th><th>${esc(S.opp)}</th><th>Rangers</th></tr></thead><tbody>${stepRowHTML("shot","shot")}</tbody></table></div>
+    <div class="card"><h2>Faceoffs won</h2>
+      <table class="stbl"><thead><tr><th style="text-align:left">Period</th><th>${esc(S.opp)}</th><th>Rangers</th></tr></thead><tbody>${stepRowHTML("fo","faceoff")}</tbody></table></div>
+    <button class="btn btn-primary btn-big" id="geSave">Save changes</button>
+    <button class="btn btn-ghost" id="geCancel">Cancel</button>
+  </div></section>`;
+  document.querySelectorAll(".gerow[data-g]").forEach(b=>b.onclick=()=>{keepDetails();editGoal(goals[+b.dataset.g])});
+  document.querySelectorAll(".gerow[data-p]").forEach(b=>b.onclick=()=>{keepDetails();const e=pens[+b.dataset.p];EDIT={e};e.s==="K"?penSheetK():penSheetO()});
+  document.querySelectorAll(".stp .step").forEach(b=>b.onclick=()=>{keepDetails();adjustCount(b.dataset.k,b.dataset.s,+b.dataset.p,+b.dataset.d)});
+  $("#geAddG").onclick=()=>{keepDetails();addEventSheet("goal")};
+  $("#geAddP").onclick=()=>{keepDetails();addEventSheet("pen")};
+  $("#geSave").onclick=saveGameEdit;
+  $("#geCancel").onclick=()=>{const leave=()=>{const id=GEDIT.rec.id;GEDIT=null;openPast(id)};
+    if(GEDIT.dirty||detailsChanged())confirmSheet("Discard your changes?","Nothing you changed here will be saved.","Discard changes",leave);else leave()};
+}
+function readDetails(){const o=$("#geOpp"),d=$("#geDate"),t=$("#geTime");if(!o)return null;return{opp:o.value.trim().replace(/\s+/g," "),date:d.value,time:t.value||"12:00"}}
+function detailsChanged(){const r=readDetails();if(!r)return false;const g=GEDIT.rec.state,d0=new Date(g.start);return r.opp!==g.opp||new Date(r.date+"T"+r.time).getTime()!==new Date(d0.getFullYear(),d0.getMonth(),d0.getDate(),d0.getHours(),d0.getMinutes()).getTime()}
+function keepDetails(){const r=readDetails();if(!r)return;if(r.opp)S.opp=r.opp;if(/^\d{4}-\d{2}-\d{2}$/.test(r.date)){const [y,m,dd]=r.date.split("-").map(Number),[hh,mm]=r.time.split(":").map(Number);S.start=new Date(y,m-1,dd,hh,mm).getTime()}}
+function addEventSheet(kind){
+  sheet({title:kind==="goal"?"Add a goal":"Add a penalty",stripe:kind==="goal"?"var(--red)":"var(--amber)",okLabel:"Next",
+    body:`<div class="lbl">Team</div><div class="seg" id="aeT"><button data-s="K" class="on">Rangers</button><button data-s="O">${esc(S.opp)}</button></div>
+      <div class="lbl">Period</div><div class="seg" id="aeP">${playedPeriods().map((p,i)=>`<button data-p="${p}" class="${i===0?"on":""}">${PER(p)}</button>`).join("")}</div>`,
+    mount:r=>{bindSeg(r,"aeT",()=>{});bindSeg(r,"aeP",()=>{})},
+    onOk:r=>{const s=r.querySelector("#aeT .on").dataset.s,p=+r.querySelector("#aeP .on").dataset.p;
+      setTimeout(()=>{EDIT={e:{k:kind,s,p,t:null,type:"EV"},isNew:true};kind==="goal"?(s==="K"?goalSheetK():goalSheetO()):(s==="K"?penSheetK():penSheetO())},0)}});
+}
+async function saveGameEdit(){
+  keepDetails();const err=t=>{$("#geErr").textContent=t};
+  if(!S.opp){err("Enter the opponent.");$("#geOpp").focus();return}
+  const b=$("#geSave");b.disabled=true;b.textContent="Saving…";
+  const r=calc(),g=GEDIT.rec;
+  const rec={...g,opp:S.opp,start:S.start,k:r.c.K.g,o:r.c.O.g,ot:r.played===4,savedAt:Date.now(),editedBy:TEAM.name,editedAt:Date.now(),state:clone({...S,phase:"final"})};
+  delete rec.synced;
+  try{
+    await Promise.race([TDB.set(tpath("games",g.id),rec),new Promise((_,rej)=>setTimeout(()=>rej(Object.assign(new Error("timeout"),{code:"timeout"})),8000))]);
+  }catch(e){
+    if(e.code!=="timeout"){b.disabled=false;b.textContent="Save changes";return err(e.code==="permission_denied"?"Only admins can save changes to a game.":"Couldn't save: "+e.message)}
+    toast("You're offline. The changes will upload when you're back online.");
+  }
+  const h=localHist();if(h[g.id]){h[g.id]={...rec,synced:true};setLocalHist(h)}
+  if(HLIST){HLIST=HLIST.filter(x=>x.id!==g.id);HLIST.push(rec)}
+  GEDIT=null;openPast(g.id);toast("Game updated");
 }
 
 /* ---------- screens ---------- */
 function render(){
   if(!TEAM)return viewJoin();
   if(VIEW==="watch"){S.phase==="final"?viewFinal():viewGame();return}
+  if(VIEW==="gedit")return viewGameEdit();
   if(VIEW==="list")return viewHistory();
   if(VIEW==="season")return viewSeason();
   if(VIEW==="review")return viewReview();
@@ -1408,7 +1496,7 @@ function describe(e){
   if(e.k==="shot")return`Shot · ${team}`;
   if(e.k==="fo")return`Faceoff win · ${team}${e.pl?` · #${e.pl.n} ${e.s==="K"?"won":"lost"}`:""}`;
   if(e.k==="goal")return`Goal · ${team}${e.sc?" · #"+e.sc.n+" "+ini(e.sc.name):""}${e.type!=="EV"?" ("+e.type+")":""}`;
-  if(e.k==="pen")return`Penalty · ${team}${e.pl?" · #"+e.pl.n+" "+ini(e.pl.name):""} · ${penText(e)}`;
+  if(e.k==="pen")return`Penalty · ${e.s==="K"?team:penWho(e)}${e.pl?" · #"+e.pl.n+" "+ini(e.pl.name):""} · ${penText(e)}`;
   if(e.k==="gch")return`Goalie change · #${e.g.n} ${e.g.name}`;
   if(e.k==="end")return e.final?"End of game":`End of ${PER(e.p)} period`;
   return"";
@@ -1457,7 +1545,8 @@ function viewGame(){
 function push(e){S.events.push(e);render()}
 function undo(){
   const e=S.events.pop();if(!e)return;buzz();
-  render();toast("Undid: "+describe(e));
+  const l=S.events[S.events.length-1];let both=false;if(e.cid&&l&&l.cid===e.cid){S.events.pop();both=true}
+  render();toast("Undid: "+(both?"coincidental penalties":describe(e)));
 }
 
 
@@ -1516,7 +1605,7 @@ function recFO(s,pl){
 
 /* ---------- editing goals ---------- */
 function commitGoal(ev,msg){
-  if(EDIT){const i=S.events.indexOf(EDIT.e);if(i>=0)S.events[i]={...ev,p:EDIT.e.p};EDIT=null;render();toast("Goal updated");if(S.phase==="final")saveGame();return}
+  if(EDIT){const p=EDIT.e.p,ne={...ev,p};if(EDIT.isNew)insertAtPeriod([ne],p);else{const i=S.events.indexOf(EDIT.e);if(i>=0)S.events[i]=ne}afterEdit(EDIT.isNew?"Goal added":"Goal updated");return}
   push(ev);toast(msg);
 }
 function fillGoalCommon(r,e){
@@ -1528,7 +1617,7 @@ function editFoot(r,e){
   r.querySelector(".sh-body").appendChild(b);
   b.onclick=()=>{r.remove();const t=e.s==="K"&&e.sc?`#${e.sc.n} ${e.sc.name}`:S.opp;
     confirmSheet("Delete this goal?",`${t}'s goal at ${fmtT(e.t)} of the ${PER(e.p)} will be removed, along with the shot it added.`,"Delete goal",()=>{
-      const i=S.events.indexOf(e);if(i>=0)S.events.splice(i,1);EDIT=null;render();toast("Goal deleted");if(S.phase==="final")saveGame()});
+      const i=S.events.indexOf(e);if(i>=0)S.events.splice(i,1);afterEdit("Goal deleted")});
     EDIT=null};
 }
 function editGoal(e){EDIT={e};e.s==="K"?goalSheetK():goalSheetO()}
@@ -1610,39 +1699,92 @@ function chipsHTML(attr,exclude){
 }
 const findP=v=>{const[n,name]=v.split("|");return S.roster.find(p=>p.n==n&&p.name===name)};
 const PENS=[["2 min",2,true],["4 min",4,true],["5 min",5,true],["10 min",10,false],["2+10",12,true]];
-function penSegHTML(){return`<div class="lbl">Penalty length</div><div class="seg" id="pseg">${PENS.map((x,i)=>`<button data-i="${i}" class="${i===0?"on":""}">${x[0]}</button>`).join("")}</div>
-  <div class="field"><label for="inf">Penalty for (optional)</label><input id="inf" placeholder="e.g. Tripping" autocomplete="off" autocapitalize="sentences" list="infl" maxlength="40"></div>
-  <datalist id="infl">${["Tripping","Hooking","Slashing","Holding","Interference","Roughing","Cross-checking","Body checking","Head contact","High sticking","Checking from behind","Boarding","Elbowing","Kneeing","Spearing","Too many players","Delay of game","Unsportsmanlike conduct","Fighting","Misconduct"].map(v=>`<option value="${v}">`).join("")}</datalist>`}
-const infOf=r=>r.querySelector("#inf").value.trim();
-const penText=e=>e.label+(e.inf?" · "+e.inf:"");
+const INFS=["Tripping","Hooking","Slashing","Holding","Interference","Roughing","Cross-checking","Body checking","Head contact","High sticking","Checking from behind","Boarding","Elbowing","Kneeing","Spearing","Too many players","Delay of game","Unsportsmanlike conduct","Fighting","Misconduct"];
+function penSegHTML(id="pseg",infId="inf",sel=0,infVal="",dl=true){return`<div class="lbl">Penalty length</div><div class="seg" id="${id}">${PENS.map((x,i)=>`<button data-i="${i}" class="${i===sel?"on":""}">${x[0]}</button>`).join("")}</div>
+  <div class="field"><label for="${infId}">Penalty for (optional)</label><input id="${infId}" placeholder="e.g. Tripping" autocomplete="off" autocapitalize="sentences" list="infl" maxlength="40" value="${esc(infVal||"")}"></div>${dl?`<datalist id="infl">${INFS.map(v=>`<option value="${v}">`).join("")}</datalist>`:""}`}
+const infOf=(r,id="inf")=>r.querySelector("#"+id).value.trim();
+const penText=e=>e.label+(e.inf?" · "+e.inf:"")+(e.coin?" (coincidental)":"");
+const penWho=e=>e.s==="K"?(e.pl?`#${e.pl.n} ${e.pl.name}`:"Rangers"):S.opp+(e.no!=null?" #"+e.no:"");
+const penIdxOf=e=>{const i=PENS.findIndex(x=>x[0]===e.label);return i<0?0:i};
 function bindSeg(root,id,cb){root.querySelector("#"+id).onclick=e=>{const b=e.target.closest("button");if(!b)return;root.querySelectorAll("#"+id+" button").forEach(x=>x.classList.toggle("on",x===b));cb(b)}}
+// put new events in the right period when editing a finished game
+function insertAtPeriod(evs,p){const i=S.events.findIndex(e=>e.k==="end"&&e.p===p);if(i<0)S.events.push(...evs);else S.events.splice(i,0,...evs)}
+function afterEdit(msg){EDIT=null;render();toast(msg);if(VIEW==="gedit"){if(typeof GEDIT!=="undefined"&&GEDIT)GEDIT.dirty=true}else if(S.phase==="final")saveGame()}
+function commitPen(evs,msg){
+  if(EDIT){const p=EDIT.e.p,ne=evs.map(e=>({...e,p}));if(EDIT.isNew)insertAtPeriod(ne,p);else{const i=S.events.indexOf(EDIT.e);if(i>=0)S.events.splice(i,1,...ne)}afterEdit(EDIT.isNew?"Penalty added":"Penalty updated");return}
+  S.events.push(...evs);render();toast(msg);
+}
+function penEditFoot(r,e){
+  const b=document.createElement("button");b.className="btn btn-ghost";b.style.cssText="color:var(--red-deep);margin-top:4px";b.textContent="Delete this penalty";
+  r.querySelector(".sh-body").appendChild(b);
+  b.onclick=()=>{r.remove();EDIT=null;
+    confirmSheet("Delete this penalty?",`${penWho(e)}'s penalty at ${fmtT(e.t)} of the ${PER(e.p)} will be removed.`,"Delete penalty",()=>{
+      const i=S.events.indexOf(e);if(i>=0)S.events.splice(i,1);afterEdit("Penalty deleted")})};
+}
+function markChip(r,sel,obj){if(!obj)return;r.querySelectorAll(sel).forEach(x=>{const v=x.dataset.pl;if(v===obj.n+"|"+obj.name)x.classList.add("on")})}
 
 function penSheetK(){
-  let pl=null,pi=0;
-  sheet({title:"Rangers penalty",stripe:"var(--amber)",okLabel:"Add penalty",
-    body:`<div class="lbl">Who took the penalty? <em id="plSel"></em></div><div class="chips" id="plc">${chipsHTML("pl")}</div>${penSegHTML()}${timeField()}`,
+  const ed=EDIT&&EDIT.e&&!EDIT.isNew?EDIT.e:null;
+  let pl=ed&&ed.pl?(findP(ed.pl.n+"|"+ed.pl.name)||ed.pl):null,pi=ed?penIdxOf(ed):0;
+  sheet({title:ed?"Edit Rangers penalty":"Rangers penalty",stripe:"var(--amber)",okLabel:ed?"Save changes":"Add penalty",onClose:()=>{EDIT=null},
+    body:`<div class="lbl">Who took the penalty? <em id="plSel">${pl?esc("#"+pl.n+" "+pl.name):""}</em></div><div class="chips" id="plc">${chipsHTML("pl")}</div>${penSegHTML("pseg","inf",pi,ed?ed.inf:"")}${timeField()}`,
     mount:r=>{
+      markChip(r,"#plc .chip",pl);
       r.querySelector("#plc").onclick=e=>{const b=e.target.closest(".chip");if(!b)return;r.querySelectorAll("#plc .chip").forEach(x=>x.classList.toggle("on",x===b));pl=findP(b.dataset.pl);r.querySelector("#plSel").textContent="#"+pl.n+" "+pl.name};
       bindSeg(r,"pseg",b=>pi=+b.dataset.i);bindTime(r);
+      if(ed){if(ed.t!=null)r.querySelector("#tr").value=fmtT(ed.t);penEditFoot(r,ed)}
     },
     onOk:r=>{
       if(!pl){r.querySelector("#plSel").textContent="Pick a player";return false}
       const t=readTime(r);if(t===undefined)return false;
-      const P=PENS[pi],inf=infOf(r);push({k:"pen",s:"K",p:curPeriod(),t,pl:{n:pl.n,name:pl.name},pim:P[1],pp:P[2],label:P[0],inf});
-      toast(`Penalty · #${pl.n} ${pl.name} · ${P[0]}${inf?" · "+inf:""}`);
+      const P=PENS[pi],inf=infOf(r),keep=ed&&ed.coin?{coin:true,cid:ed.cid,pp:false}:{};
+      commitPen([{k:"pen",s:"K",p:ctxP(),t,pl:{n:pl.n,name:pl.name},pim:P[1],pp:P[2],label:P[0],inf,...keep}],`Penalty · #${pl.n} ${pl.name} · ${P[0]}${inf?" · "+inf:""}`);
     }});
 }
 function penSheetO(){
-  let pi=0;
-  sheet({title:S.opp+" penalty",stripe:"var(--amber)",okLabel:"Add penalty",
-    body:`${penSegHTML()}${timeField()}`,
-    mount:r=>{bindSeg(r,"pseg",b=>pi=+b.dataset.i);bindTime(r)},
-    onOk:r=>{const t=readTime(r);if(t===undefined)return false;const P=PENS[pi],inf=infOf(r);push({k:"pen",s:"O",p:curPeriod(),t,pim:P[1],pp:P[2],label:P[0],inf});toast(`Penalty · ${S.opp} · ${P[0]}${inf?" · "+inf:""}`)}});
+  const ed=EDIT&&EDIT.e&&!EDIT.isNew?EDIT.e:null;
+  let mode="single",pi=ed?penIdxOf(ed):0,pi2=0,pl=null;
+  const numField=(v)=>`<div class="field"><label for="pno">${esc(S.opp)} player number (optional)</label><input id="pno" inputmode="numeric" maxlength="2" autocomplete="off" placeholder="Leave blank if you don't know" value="${v!=null?v:""}"></div>`;
+  sheet({title:ed?`Edit ${S.opp} penalty`:`${S.opp} penalty`,stripe:"var(--amber)",okLabel:ed?"Save changes":"Add penalty",onClose:()=>{EDIT=null},
+    body:`${ed?"":`<div class="seg" id="pmode"><button data-m="single" class="on">${esc(S.opp)} only</button><button data-m="coin">Coincidental</button></div>`}
+      <div class="lbl coinh" ${ed&&ed.coin?"":"hidden"}>${esc(S.opp)} penalty</div>
+      <div id="pnoWrap" ${ed&&ed.coin?"":"hidden"}>${numField(ed?ed.no:null)}</div>
+      ${penSegHTML("pseg","inf",pi,ed?ed.inf:"")}
+      <div id="coinK" hidden>
+        <div class="lbl coinh">Rangers penalty <em id="plSel"></em></div>
+        <div class="chips" id="plc">${chipsHTML("pl")}</div>
+        ${penSegHTML("pseg2","inf2",0,"",false)}
+        <p class="hint" style="font-size:13px">Coincidental penalties don't create a power play.</p>
+      </div>
+      <p class="err-msg" id="pErr"></p>
+      ${timeField()}`,
+    mount:r=>{
+      bindSeg(r,"pseg",b=>pi=+b.dataset.i);bindSeg(r,"pseg2",b=>pi2=+b.dataset.i);bindTime(r);
+      if(!ed)bindSeg(r,"pmode",b=>{mode=b.dataset.m;const c=mode==="coin";r.querySelector("#coinK").hidden=!c;r.querySelector("#pnoWrap").hidden=!c;r.querySelectorAll(".coinh").forEach(x=>x.hidden=!c);r.querySelector(".sh-head h3").textContent=c?"Coincidental penalties":`${S.opp} penalty`});
+      r.querySelector("#plc").onclick=e=>{const b=e.target.closest(".chip");if(!b)return;r.querySelectorAll("#plc .chip").forEach(x=>x.classList.toggle("on",x===b));pl=findP(b.dataset.pl);r.querySelector("#plSel").textContent="#"+pl.n+" "+pl.name;r.querySelector("#pErr").textContent=""};
+      if(ed){if(ed.t!=null)r.querySelector("#tr").value=fmtT(ed.t);penEditFoot(r,ed)}
+    },
+    onOk:r=>{
+      const coin=mode==="coin",err=t=>{r.querySelector("#pErr").textContent=t};
+      if(coin&&!pl){err("Pick the Rangers player.");r.querySelector("#plc").scrollIntoView({block:"nearest"});return false}
+      const nf=r.querySelector("#pno"),nv=nf&&!r.querySelector("#pnoWrap").hidden?nf.value.trim():"",no=/^\d{1,2}$/.test(nv)?+nv:null;
+      if(nv&&no===null){err("Use numbers only for the player number, or leave it blank.");return false}
+      const t=readTime(r);if(t===undefined)return false;
+      const P=PENS[pi],inf=infOf(r);
+      if(coin){
+        const P2=PENS[pi2],inf2=infOf(r,"inf2"),cid=newId(),p=ctxP();
+        commitPen([{k:"pen",s:"O",p,t,pim:P[1],pp:false,label:P[0],inf,no,coin:true,cid},{k:"pen",s:"K",p,t,pl:{n:pl.n,name:pl.name},pim:P2[1],pp:false,label:P2[0],inf:inf2,coin:true,cid}],
+          `Coincidental · ${S.opp}${no!=null?" #"+no:""} ${P[0]} · #${pl.n} ${pl.name} ${P2[0]}`);
+        return;
+      }
+      const keep=ed&&ed.coin?{coin:true,cid:ed.cid,no,pp:false}:{};
+      commitPen([{k:"pen",s:"O",p:ctxP(),t,pim:P[1],pp:P[2],label:P[0],inf,...keep}],`Penalty · ${S.opp} · ${P[0]}${inf?" · "+inf:""}`);
+    }});
 }
 function typeSegHTML(){return`<div class="lbl">Goal type</div><div class="seg" id="tseg"><button data-t="EV" class="on">Even strength</button><button data-t="PP">Power play</button><button data-t="SH">Shorthanded</button></div><p class="hint" id="tnote" style="font-size:13px;margin-top:-6px"></p>`}
 
 function goalSheetK(){
-  const ed=EDIT&&EDIT.e;
+  const ed=EDIT&&EDIT.e&&!EDIT.isNew?EDIT.e:null;
   let sc=ed?(findP(pkey(ed.sc))||ed.sc):null,as=ed?[ed.a1,ed.a2].filter(Boolean).map(a=>findP(pkey(a))||a):[],un=!!(ed&&!ed.a1),type=ed?ed.type:"EV",ice=null;
   sheet({title:ed?"Edit Rangers goal":"Rangers goal",stripe:"var(--red)",okLabel:ed?"Save changes":"Add goal",onClose:()=>{EDIT=null},
     body:`<div class="lbl">Who scored? <em id="scSel"></em></div><div class="chips" id="scc">${chipsHTML("sc")}</div>
@@ -1682,7 +1824,7 @@ function goalSheetK(){
     }});
 }
 function goalSheetO(){
-  const ed=EDIT&&EDIT.e;
+  const ed=EDIT&&EDIT.e&&!EDIT.isNew?EDIT.e:null;
   let type=ed?ed.type:"EV",ice=null;
   sheet({title:(ed?"Edit ":"")+S.opp+" goal",stripe:"var(--opp)",okLabel:ed?"Save changes":"Add goal",onClose:()=>{EDIT=null},
     body:`${timeField()}${typeSegHTML()}${iceHTML()}`,
@@ -1787,7 +1929,7 @@ function viewFinal(){
       ${goals.length?goals.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who">${e.s==="K"?`<b>#${e.sc.n} ${esc(e.sc.name)}</b>${tag(e.type,e)}<div>${e.a1?"Assists: "+[e.a1,e.a2].filter(Boolean).map(a=>"#"+a.n+" "+esc(a.name)).join(", "):"Unassisted"}</div>`:`<b>${esc(S.opp)}</b>${tag(e.type,e)}`}</div></div>`).join(""):'<p class="empty">No goals scored.</p>'}
     </div></div>
     <div class="card"><h2>Penalties</h2><div class="glist">
-      ${pens.length?pens.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who"><b>${e.s==="K"?"#"+e.pl.n+" "+esc(e.pl.name):esc(S.opp)}</b><div>${esc(penText(e))}</div></div></div>`).join(""):'<p class="empty">No penalties.</p>'}
+      ${pens.length?pens.map(e=>`<div class="gl ${e.s==="K"?"k":"o"}"><div class="when"><b>${PER(e.p)}</b>${fmtT(e.t)}</div><div class="who"><b>${esc(penWho(e))}</b><div>${esc(penText(e))}</div></div></div>`).join(""):'<p class="empty">No penalties.</p>'}
     </div></div>
     ${(()=>{const {list,unk}=playerStats();return`<div class="card"><h2>Player stats</h2>
       <div style="overflow-x:auto"><table class="stbl ptbl"><thead><tr><th>#</th><th class="pn">Player</th><th>G</th><th>A</th><th>P</th><th>+/-</th><th>PIM</th><th>FO</th><th>FO%</th></tr></thead><tbody>
@@ -1808,7 +1950,7 @@ function viewFinal(){
   getDL().then(dl=>{const b=$("#pcsv");if(dl&&b)b.hidden=false});
   const fe=$("#fedit");if(fe)fe.onclick=goalsListSheet;
   if(VIEW==="watch"){decorateWatchFinal();return}
-  if(VIEW==="game"){$("#hback").onclick=backToList;$("#hdel").onclick=deletePast;if(!isAdmin())$("#hdel").remove();return}
+  if(VIEW==="game"){$("#hback").onclick=backToList;$("#hdel").onclick=deletePast;if(!isAdmin())$("#hdel").remove();else{$("#photo").insertAdjacentHTML("beforebegin",`<button class="btn btn-navy" id="gEdit">Edit game</button>`);$("#gEdit").onclick=startGameEdit}return}
   $("#hist").onclick=openHistory;
   $("#back").onclick=()=>{S.events.pop();S.phase="game";render();toast("Game reopened")};
   $("#newg").onclick=()=>confirmSheet("Start a new game?","Save the summary photo first if you want to keep it. This game's stats will be cleared.","Start new game",()=>{S=fresh();render();scrollTo(0,0)});
@@ -2022,7 +2164,7 @@ async function makePhoto(){
   section("Penalties");
   if(!pens.length){x.fillStyle="#4a5b74";x.font=`400 26px ${B}`;x.fillText("No penalties.",P,y+30);y+=56}
   pens.forEach(e=>{x.fillStyle="#0d1b33";x.font=`700 26px ${D}`;x.fillText(`${PER(e.p)}  ${fmtT(e.t)}`,P,y+34);
-    const pt=penText(e);fit(pt,420,26,600,B);const lw=x.measureText(pt).width;const who=e.s==="K"?`#${e.pl.n} ${e.pl.name}`:S.opp;
+    const pt=penText(e);fit(pt,420,26,600,B);const lw=x.measureText(pt).width;const who=penWho(e);
     x.textAlign="right";x.fillStyle="#4a5b74";x.fillText(pt,W-P,y+34);x.textAlign="left";
     x.fillStyle="#0d1b33";fit(who,W-P-lw-30-(P+190),26,600,B);x.fillText(who,P+190,y+34);y+=56});
   // crop to content and add footer
